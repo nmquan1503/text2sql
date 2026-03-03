@@ -351,7 +351,7 @@ if __name__ == "__main__":
     schemas = load_schemas(
         db_paths=db_paths,
         column_meaning_path=args.column_meaning_path,
-        cached_schemas_path=args
+        cached_schemas_path=args.cached_schemas_path
     )
     semantic_map = buid_semantic_map(table_path=args.table_path)
     # generate_reasoning(data)
