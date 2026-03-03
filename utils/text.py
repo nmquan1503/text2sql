@@ -18,7 +18,7 @@ def text_to_canonical_form(text: str) -> str:
     # ThisText -> This Text
     # thisText -> this Text
     # THISText -> THIS Text
-    text = " ".join(re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+", text))
+    text = " ".join(re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|\d+|[A-Z]+", text))
 
     text = text.lower().replace('_', ' ')
     words = [stemmer.stem(w) for w in text.split() if w not in STOPWORDS]

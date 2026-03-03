@@ -43,7 +43,7 @@ def extract_base_schema(sql: str) -> Dict:
             }
     """
 
-    expr = sqlglot.parse_one(sql)
+    expr = sqlglot.parse_one(sql, read="sqlite")
     qualify_columns(expr)
 
     # Collect aliases of runtime tables introduced by CTEs and subqueries

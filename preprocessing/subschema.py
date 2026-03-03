@@ -3,7 +3,6 @@ import numpy as np
 from rapidfuzz import fuzz
 import pickle
 import re
-import wordninja
 
 from utils.text import (
     text_to_canonical_form,
@@ -31,12 +30,16 @@ def transform_to_keys(texts: List[str]) -> List[str]:
     keys = []
     for text in canonical_texts:
         words = text.split()
-        words = sorted(words, key=lambda w: word_count[w])
-        if any(word_count[w] == 1 for w in words):
-            words = [w for w in words if word_count[w] == 1]
-        else:
-            words = words[:1]
-        words = [",".join(wordninja.split(word) + [word]) for word in words]
+        try:
+            min_count = min([word_count[w] for w in words])
+        except:
+            min_count = 0
+        words = [w for w in words if word_count[w] == min_count]
+        # words = sorted(words, key=lambda w: word_count[w])
+        # if any(word_count[w] == 1 for w in words):
+        #     words = [w for w in words if word_count[w] == 1]
+        # else:
+        #     words = words[:1]
         keys.append(",".join(words))
     
     return keys
@@ -62,10 +65,22 @@ def _add_schema_item(
             subschema[table_name][column_name] = {
                 "data_type": schema[table_name][column_name]["data_type"],
                 "foreign_key": schema[table_name][column_name]["foreign_key"],
-                "values": set()
+                "values": set(),
+                "meaning": schema[table_name][column_name]["meaning"]
             }
         elif column_values is not None:
             subschema[table_name][column_name]["values"].update(column_values)
+    else:
+        # If adding a table without specifying columns, automatically include its primary key
+        for column_name, column in schema[table_name].items():
+            if column["primary_key"]:
+                subschema[table_name][column_name] = {
+                    "data_type": schema[table_name][column_name]["data_type"],
+                    "foreign_key": schema[table_name][column_name]["foreign_key"],
+                    "values": set(),
+                    "meaning": schema[table_name][column_name]["meaning"]
+                }
+                break
 
 def _extract_exact_columns(
     text: str,
@@ -92,7 +107,7 @@ def _extract_exact_columns(
 def _extract_from_data(
     text: str,
     schema: Dict,
-    db_path: str,
+    db_path: str | None = None,
     subschema: Dict | None = None,
     remove_entities: bool = False
 ) -> Dict:
@@ -108,11 +123,12 @@ def _extract_from_data(
             value_prefixs = column["value_prefixs"]
             if not value_prefixs:
                 continue
+            value_prefixs = [v.lower() for v in value_prefixs]
             for word in cleaned_text.split():
-                word = word[:10]
+                word = word[:10].lower()
                 if word in value_prefixs:
                     if db_path:
-                        values = find_values(db_path, word, table_name, column_name)
+                        values = find_values(db_path, table_name, column_name, word)
                     else:
                         values = []
                     entities.update(values)
@@ -138,23 +154,52 @@ def expand_semantics(text: str) -> str:
     text = re.sub(r"\bperson\b", "people, person", text, flags=re.IGNORECASE)
     text = re.sub(r"\bfree\b", "free price, cost", text, flags=re.IGNORECASE)
     text = re.sub(r"\blist\b", "name, title", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bselling\b", "price, cost, bill, quantity", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bselling\b", "selling, price, cost, bill, quantity", text, flags=re.IGNORECASE)
+    text = re.sub(r"USD", " cost, amount, price ", text, flags=re.IGNORECASE)
+    text = re.sub(r"[\$€£¥₩₹₽₫₿¢]", " cost, amount, price ", text)
+    text = re.sub(r"\bfirst\b", "first, 1, 1st", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bsecond\b", "second, 2, 2nd", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bthird\b", "third, 3, 3rd", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b1st\b", "1st, first", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b2nd\b", "2nd, second", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b3rd\b", "3rd, third", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", r"date, time, day, datetime, timestamp, birth, born, dob \g<0>", text)
+    text = re.sub(r"\b(19\d{2}|20\d{2})\b", r"year, date, datetime, time, timestamp, birth, born, dob \1", text)
+    text = re.sub(r"\bborn\b", "dob, birth, born, date, birthday", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bbirthday\b", "dob, date, birth", text, flags=re.IGNORECASE)
+    
     return text
 
-def generate_schema_keys(schema: Dict) -> Dict:
+def generate_schema_keys(schema: Dict, semantic_map: Dict) -> Dict:
     key_map = {}
 
     table_names = list(schema.keys())
+    semantic_table_names = [
+        semantic_map.get(table_name, "") 
+        for table_name in table_names
+    ]
     table_keys = transform_to_keys(table_names)
-    for name, key in zip(table_names, table_keys):
-        key_map[name] = key
+    semantic_table_keys = transform_to_keys(semantic_table_names)
+    for name, key, semantic_key in zip(table_names, table_keys, semantic_table_keys):
+        all_parts = key.split(",") + semantic_key.split(",")
+        all_parts = [i for i in all_parts if i]
+        all_parts = list(set(all_parts))
+        key_map[name] = ",".join(all_parts)
 
     for table_name, table in schema.items():
         column_names = list(table.keys())
+        semantic_column_names = [
+            semantic_map.get(f"{table_name}|{column_name}", "")
+            for column_name in column_names
+        ]
         column_keys = transform_to_keys(column_names)
-        for column_name, key in zip(column_names, column_keys):
+        semantic_column_keys = transform_to_keys(semantic_column_names)
+        for column_name, key, semantic_key in zip(column_names, column_keys, semantic_column_keys):
+            all_parts = key.split(",") + semantic_key.split(",")
+            all_parts = [i for i in all_parts if i]
+            all_parts = list(set(all_parts))
             name = f"{table_name}|{column_name}"
-            key_map[name] = key
+            key_map[name] = ",".join(all_parts)
 
     return key_map
 
@@ -203,8 +248,8 @@ def extract_subschema(
     question: str, 
     evidence: str,
     schema: Dict,
-    db_path: str,
-    semantic_map = None
+    db_path: str | None,
+    schema_semantic_map: Dict | None = None
 ) -> Dict:
     """
     Extract the subschema relevant to the question.
@@ -233,13 +278,18 @@ def extract_subschema(
         schema=schema,
         db_path=db_path,
         subschema=subschema,
-        remove_entities=True
+        remove_entities=False
     )
 
     full_question = expand_semantics(full_question)
     full_question = text_to_canonical_form(full_question)
+    question_keys = set(full_question.split())
 
-    key_map = generate_schema_keys(schema)
+    key_map = generate_schema_keys(schema, schema_semantic_map)
+
+    # from pprint import pprint
+    # print(full_question)
+    # pprint(key_map)
 
     # Select tables relevant to the question
     for table_name in schema.keys():
@@ -247,7 +297,7 @@ def extract_subschema(
         keys = keys_str.split(",")
         for k in keys:       
             # If key appears in the question     
-            if k in full_question:
+            if k in question_keys:
                 _add_schema_item(subschema, schema, table_name)
     
     # Select columns relevant to the question
@@ -258,7 +308,7 @@ def extract_subschema(
             keys = keys_str.split(",")
             for k in keys:
                 # If key appears in the question
-                if k in full_question:
+                if k in question_keys:
                     _add_schema_item(subschema, schema, table_name, column_name)
 
     _update_foreign_keys(subschema, schema)
@@ -269,6 +319,17 @@ def extract_subschema(
         for table_name, table in subschema.items()
         if table
     }
+
+    for table_name, table in subschema.items():
+        for column_name, column in table.items():
+            if not column["values"]:
+                column["values"].update(find_values(db_path, table_name, column_name, limit=1))
+
+    need_table_names = subschema.keys()
+    for table_name in need_table_names:
+        for column_name in schema[table_name]:
+            if column_name not in subschema[table_name]:
+                _add_schema_item(subschema, schema, table_name, column_name)
 
     for table in subschema.values():
         for column in table.values():

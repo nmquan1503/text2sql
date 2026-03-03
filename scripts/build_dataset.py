@@ -2,31 +2,60 @@ import json
 import re
 from typing import List, Dict
 import os
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import argparse
 
-from preprocessing.semantic_map import SemanticMap
 from preprocessing.subschema import extract_subschema
+from preprocessing.normalize import normalize_question
 from utils.sqlite import introspect_db, schema_to_string, filter_schema
 from utils.sql import extract_base_schema
 
-def buid_semantic_map() -> SemanticMap:
-    with open("data/train_bird.json", "r") as f:
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--data_path", type=str)
+    parser.add_argument("--table_path", type=str)
+    parser.add_argument("--thinking_path", type=str)
+    parser.add_argument("--db_dir", type=str)
+    parser.add_argument("--column_meaning_path", type=str)
+    parser.add_argument("--cached_schemas_path", type=str)
+
+    return parser.parse_args()
+
+def buid_semantic_map(table_path: str) -> Dict:
+    with open(table_path, "r") as f:
+        semantic_map = {}
         data = json.load(f)
-        questions = [item["question"] for item in data]
-        sqls = [item["SQL"] for item in data]
-        semantic_map = SemanticMap()
-        semantic_map.fit(questions, sqls)
+        for item in data:
+            db_id = item["db_id"]
+            semantic_map[db_id] = {}
+            table_names = item["table_names_original"]
+            semantic_table_names = item["table_names"]
+            for table_name, semantic_name in zip(table_names, semantic_table_names):
+                semantic_map[db_id][table_name] = semantic_name
+            
+            column_names = item["column_names_original"]
+            semantic_column_names = item["column_names"]
+
+            for column, semantic_column in zip(column_names, semantic_column_names):
+                table_id = column[0]
+                if table_id < 0 or table_id >= len(table_names):
+                    continue
+                table_name = table_names[table_id]
+                column_name = column[1]
+                semantic_name = semantic_column[1]
+                semantic_map[db_id][f"{table_name}|{column_name}"] = semantic_name
+
         return semantic_map
 
-def load_samples(mode="train") -> List[Dict]:
-    if mode == "dev":
-        with open("data/dev_bird.json", "r") as f:
+def load_samples(data_path: str, thinking_path: str | None = None) -> List[Dict]:
+    if not thinking_path:
+        with open(data_path, "r") as f:
             data = json.load(f)
             return data
 
-    with open("data/filtered_train_bird.json", "r") as f:
+    with open(data_path, "r") as f:
         filtered_ds = json.load(f)
-    with open("data/train_bird_think.json", "r") as f:
+    with open(thinking_path, "r") as f:
         think_ds = json.load(f)
 
     for item in think_ds:
@@ -69,21 +98,13 @@ def load_samples(mode="train") -> List[Dict]:
 
     return filtered_ds
 
-def load_schemas(db_paths: List[str] | None = None, mode="train") -> Dict[str, Dict]:
-    if mode == "train":
-        with open("resources/train_column_meaning.json") as f:
-            column_meaning = json.load(f)
-    else:
-        with open("resources/dev_column_meaning.json") as f:
-            column_meaning = json.load(f)
-    
-    if db_paths is None:
-        if mode == "train":
-            with open("resources/schemas.json", "r") as f:
-                schemas = json.load(f)
-        else:
-            with open("resources/dev_schemas.json", "r") as f:
-                schemas = json.load(f)
+def load_schemas(column_meaning_path: str, cached_schemas_path: str | None = None, db_paths: List[str] | None = None) -> Dict[str, Dict]:
+    with open(column_meaning_path) as f:
+        column_meaning = json.load(f)
+
+    if cached_schemas_path:
+        with open(cached_schemas_path, "r") as f:
+            schemas = json.load(f)
     else:
         schemas = {}
         for db_path in db_paths:
@@ -132,6 +153,7 @@ def load_schemas(db_paths: List[str] | None = None, mode="train") -> Dict[str, D
             r"including example.+s",
         ]
         
+        meaning = re.sub(r"^\W+|\W+$", "", meaning)
         for pattern in patterns:
             match = re.match(pattern, meaning)
             if match:
@@ -151,6 +173,12 @@ def load_schemas(db_paths: List[str] | None = None, mode="train") -> Dict[str, D
                 and column_name in schemas[db_id][table_name]:
                 schemas[db_id][table_name][column_name]["meaning"] = meaning
     
+    for db_id, schema in schemas.items():
+        for table_name, table in schema.items():
+            for column_name, column in table.items():
+                if "meaning" not in column:
+                    column["meaning"] = ""
+
     return schemas
 
 def generate_reasoning_prompt(
@@ -310,11 +338,47 @@ def build_dataset(data, schemas, semantic_map, mode="train"):
 
 
 if __name__ == "__main__":
-    data = load_samples()
-    schemas = load_schemas()
-    semantic_map = buid_semantic_map()
-    generate_reasoning(data)
-    final_data = build_dataset(data, schemas, semantic_map)
-    with open("resources/final_train.json", "w") as f:
-        json.dump(final_data, f, indent=2)
+    args = parse_args()
     
+    data = load_samples(args.data_path, args.thinking_path)
+    db_paths = []
+
+    for root, dirs, files in os.walk(args.db_dir):
+        for file in files:
+            if file.endswith(".sqlite"):
+                db_paths.append(os.path.join(root, file))
+
+    schemas = load_schemas(
+        db_paths=db_paths,
+        column_meaning_path=args.column_meaning_path,
+        cached_schemas_path=args
+    )
+    semantic_map = buid_semantic_map(table_path=args.table_path)
+    # generate_reasoning(data)
+    # final_data = build_dataset(data, schemas, semantic_map)
+    # with open("resources/final_train.json", "w") as f:
+    #     json.dump(final_data, f, indent=2)
+
+    final_item = []
+    for item in data:
+        question = item["question"]
+        question = normalize_question(question)
+        evi = item["evidence"]
+        evi = normalize_question(evi)
+        db_id = item["db_id"]
+        sql = item["SQL"]
+
+        subschema = extract_subschema(
+            question, 
+            evi, 
+            schemas[db_id],
+            db_path=f"{args.db_dir}/{db_id}/{db_id}.sqlite",
+            schema_semantic_map=semantic_map[db_id]
+        )
+
+        final_item.append({
+            "db_desc": schema_to_string(subschema, mode="ddl"),
+            "question": f"{evi}. {question}"
+        })
+    with open("out.json", "w") as f:
+        json.dump(final_item, f, indent=2)

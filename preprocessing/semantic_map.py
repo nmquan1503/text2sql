@@ -10,6 +10,11 @@ class SemanticMap:
     def __init__(self):
         self.map = {}
 
+    def get_keys(self, word: str, top_k: int = 5) -> List[str]:
+        if word not in self.map:
+            return []
+        return list(self.map[word])
+
     def _remove_entity(self, question: str, sql: str):
         try:
             expr = sqlglot.parse_one(sql)

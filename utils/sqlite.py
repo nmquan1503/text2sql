@@ -1,5 +1,5 @@
 import sqlite3
-from typing import Dict, List
+from typing import Dict, List, Literal
 
 def introspect_db(db_path: str) -> Dict:
     """
@@ -10,7 +10,7 @@ def introspect_db(db_path: str) -> Dict:
             table_name_value: {
                 col_name_value: {
                     "data_type": type,
-                    "values": [...values],
+                    "value_prefixs": [...value_prefixs],
                     "primary_key": bool,
                     "foreign_key": {
                         "ref_table": ref_table_value,
@@ -88,7 +88,8 @@ def introspect_db(db_path: str) -> Dict:
                             WHERE "{col_name}" IS NOT NULL
                             """
                         ).fetchall()
-                        value_prefixs = set([r[0] for r in rows])
+                        value_prefixs = [r[0].replace('"',' ').replace("'",' ').split()[0] for r in rows]
+                        value_prefixs = set(value_prefixs)
                     except:
                         value_prefixs = None
                 else:
@@ -99,6 +100,24 @@ def introspect_db(db_path: str) -> Dict:
                     "primary_key": is_primary_key,
                     "foreign_key": fk_map.get(col_name)
                 }
+        
+        for table_name, table in result.items():
+            for column_name, column in table.items():
+                if column["foreign_key"]:
+                    ref = column["foreign_key"]
+                    ref_table = ref["ref_table"]
+                    ref_column = ref["ref_column"]
+                    for table_name_2 in result.keys():
+                        if table_name_2.lower() == ref_table.lower():
+                            ref_table = table_name_2
+                            break
+                    for column_name_2 in result[table_name].keys():
+                        if column_name_2.lower() == ref_column.lower():
+                            ref_column = column_name_2
+                            break
+                    ref["ref_table"] = ref_table
+                    ref["ref_column"] = ref_column
+                            
     finally:
         if cursor:
             cursor.close()
@@ -109,9 +128,9 @@ def introspect_db(db_path: str) -> Dict:
 
 def find_values(
     db_path: str, 
-    value_prefix: str,
     table_name: str,
     column_name: str,
+    value_prefix: str | None = None,
     limit: int | None = 2
 ) -> List[str]:
     """
@@ -128,13 +147,18 @@ def find_values(
         SELECT DISTINCT "{column_name}"
         FROM "{table_name}"
         WHERE "{column_name}" IS NOT NULL
-            AND "{column_name}" LIKE ?
         """
+
+        params = []
+
+        if value_prefix:
+            sql += f'AND "{column_name}" LIKE ?'
+            params.append(value_prefix + "%")
 
         if limit is not None:
             sql += f" LIMIT {limit}"
 
-        rows = cursor.execute(sql, (value_prefix + "%",)).fetchall()
+        rows = cursor.execute(sql, params).fetchall()
         return [r[0] for r in rows]
 
     finally:
@@ -143,19 +167,38 @@ def find_values(
         if conn:
             conn.close()
 
-def schema_to_string(schema: Dict) -> str:
+def schema_to_string(schema: Dict, mode: Literal["ddl", "markdown", None] = None) -> str:
     schema_description = ""
-    for table_name, table in schema.items():
-        schema_description += f"(Table) {table_name}:\n"
-        for column_name, column in table.items():
-            schema_description += f"\t(Column) {column_name}"
-            if column["foreign_key"]:
-                if column["foreign_key"]["ref_table"] in schema and column["foreign_key"]["ref_column"] in schema[column["foreign_key"]["ref_table"]]:
-                    schema_description += f" - refer to - {column["foreign_key"]["ref_table"]}.{column["foreign_key"]["ref_column"]}"
-            schema_description += f": {column["data_type"]}"
-            if "meaning" in column:
-                schema_description += f", {column["meaning"]}"
-            schema_description += "\n"
+    
+    if mode == "ddl":
+        for table_name, table in schema.items():
+            schema_description += f"CREATE TABLE {table_name} (\n"
+            for column_name, column in table.items():
+                schema_description += f"\t`{column_name}` {column["data_type"]},"
+                if "meaning" in column:
+                    schema_description += f"\t -- {column["meaning"]}"
+                if column["values"]:
+                    if column["data_type"].upper() in ("TEXT", "CHAR", "VARCHAR", "CLOB"):
+                        all_values = ", ".join([f"'{value}'" for value in column["values"]])
+                    else:
+                        all_values = ", ".join([str(value) for value in column["values"]])
+                    schema_description += f"\t-- example: [{all_values}]"
+                schema_description += "\n"
+            schema_description += ");\n"
+
+    else:
+        for table_name, table in schema.items():
+            schema_description += f"(Table) {table_name}:\n"
+            for column_name, column in table.items():
+                schema_description += f"\t(Column) {column_name}"
+                if column["foreign_key"]:
+                    if column["foreign_key"]["ref_table"] in schema and column["foreign_key"]["ref_column"] in schema[column["foreign_key"]["ref_table"]]:
+                        schema_description += f" - refer to - {column["foreign_key"]["ref_table"]}.{column["foreign_key"]["ref_column"]}"
+                schema_description += f": {column["data_type"]}"
+                if "meaning" in column:
+                    schema_description += f", {column["meaning"]}"
+                schema_description += "\n"
+    
     return schema_description
 
 def filter_schema(schema: Dict, elements: Dict[str, List[str]]):
