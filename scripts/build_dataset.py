@@ -3,6 +3,7 @@ import re
 from typing import List, Dict
 import os
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from preprocessing.subschema import extract_subschema
 from preprocessing.normalize import normalize_question
@@ -336,6 +337,23 @@ def build_dataset(data, schemas, semantic_map, mode="train"):
 
     return final_data
 
+def process_item(item, schemas, semantic_map, args):
+    question = normalize_question(item["question"])
+    evi = normalize_question(item["evidence"])
+    db_id = item["db_id"]
+
+    subschema = extract_subschema(
+        question,
+        evi,
+        schemas[db_id],
+        db_path=f"{args.db_dir}/{db_id}/{db_id}.sqlite",
+        schema_semantic_map=semantic_map[db_id]
+    )
+
+    return {
+        "db_desc": schema_to_string(subschema, mode="ddl"),
+        "question": f"{evi}. {question}"
+    }
 
 if __name__ == "__main__":
     args = parse_args()
@@ -360,25 +378,15 @@ if __name__ == "__main__":
     #     json.dump(final_data, f, indent=2)
 
     final_item = []
-    for item in data:
-        question = item["question"]
-        question = normalize_question(question)
-        evi = item["evidence"]
-        evi = normalize_question(evi)
-        db_id = item["db_id"]
-        sql = item["SQL"]
+    max_workers = os.cpu_count()
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(process_item, item, schemas, semantic_map, args)
+            for item in data
+        ]
 
-        subschema = extract_subschema(
-            question, 
-            evi, 
-            schemas[db_id],
-            db_path=f"{args.db_dir}/{db_id}/{db_id}.sqlite",
-            schema_semantic_map=semantic_map[db_id]
-        )
-
-        final_item.append({
-            "db_desc": schema_to_string(subschema, mode="ddl"),
-            "question": f"{evi}. {question}"
-        })
+        for future in as_completed(futures):
+            final_item.append(future.result())
+            
     with open("out.json", "w") as f:
         json.dump(final_item, f, indent=2)
