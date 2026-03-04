@@ -380,18 +380,13 @@ if __name__ == "__main__":
 
     final_item = []
     with ThreadPoolExecutor(max_workers=32) as executor:
-        futures = [
-            executor.submit(process_item, item, schemas, semantic_map, args)
-            for item in data
-        ]
+        results = executor.map(
+            lambda item: process_item(item, schemas, semantic_map, args),
+            data
+        )
 
-
-        for future in tqdm(
-            as_completed(futures),
-            total=len(futures),
-            desc="Processing",
-        ):
-            final_item.append(future.result())
+        for result in tqdm(results, total=len(data), desc="Processing"):
+            final_item.append(result)
 
     with open("out.json", "w") as f:
         json.dump(final_item, f, indent=2)
