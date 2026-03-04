@@ -4,6 +4,7 @@ from typing import List, Dict
 import os
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
 
 from preprocessing.subschema import extract_subschema
 from preprocessing.normalize import normalize_question
@@ -378,15 +379,19 @@ if __name__ == "__main__":
     #     json.dump(final_data, f, indent=2)
 
     final_item = []
-    max_workers = os.cpu_count()
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=32) as executor:
         futures = [
             executor.submit(process_item, item, schemas, semantic_map, args)
             for item in data
         ]
 
-        for future in as_completed(futures):
+
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc="Processing",
+        ):
             final_item.append(future.result())
-            
+
     with open("out.json", "w") as f:
         json.dump(final_item, f, indent=2)
