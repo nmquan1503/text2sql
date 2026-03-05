@@ -325,11 +325,11 @@ def extract_subschema(
             if not column["values"] and any(t in column["data_type"].lower() for t in ("char","text","clob","nchar","nvarchar","int","real","floa","doub","numeric","decimal")):
                 column["values"].update(find_values(db_path, table_name, column_name, limit=1))
 
-    # need_table_names = subschema.keys()
-    # for table_name in need_table_names:
-    #     for column_name in schema[table_name]:
-    #         if column_name not in subschema[table_name]:
-    #             _add_schema_item(subschema, schema, table_name, column_name)
+    need_table_names = subschema.keys()
+    for table_name in need_table_names:
+        for column_name in schema[table_name]:
+            if column_name not in subschema[table_name]:
+                _add_schema_item(subschema, schema, table_name, column_name)
 
     for table in subschema.values():
         for column in table.values():
