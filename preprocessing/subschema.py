@@ -93,7 +93,7 @@ def _extract_exact_columns(
 
     for table_name, tables in schema.items():
         for column_name in tables.keys():
-            if column_name in text:
+            if column_name in text.split():
                 _add_schema_item(subschema, schema, table_name, column_name)
 
     if remove_entities:
@@ -131,9 +131,15 @@ def _extract_from_data(
                         values = find_values(db_path, table_name, column_name, word)
                     else:
                         values = []
-                    entities.update(values)
-                    _add_schema_item(subschema, schema, table_name, column_name, values)
-                    break
+                    if values:
+                        for val in values:
+                            if val in text:
+                                entities.update(values)
+                                entities.add(table_name)
+                                entities.add(column_name)
+                            if val.lower() in text.lower():
+                                _add_schema_item(subschema, schema, table_name, column_name, values)
+                                break
 
     if remove_entities:
         for entity in entities:
@@ -248,7 +254,7 @@ def extract_subschema(
     question: str, 
     evidence: str,
     schema: Dict,
-    db_path: str | None,
+    db_path: str | None = None,
     schema_semantic_map: Dict | None = None
 ) -> Dict:
     """
@@ -261,9 +267,21 @@ def extract_subschema(
         A subschema containing only tables and columns relevant to the question.
     """
 
+    subschema, full_question = _extract_from_data(
+        text=question + " | " + evidence,
+        schema=schema,
+        db_path=db_path,
+        remove_entities=True
+    )
+
+    parts = full_question.split(" | ")
+    question = parts[0]
+    evidence = parts[1]
+
     subschema, evidence = _extract_exact_columns(
         text=evidence,
         schema=schema,
+        subschema=subschema,
         remove_entities=True
     )
     subschema, _ = _extract_exact_columns(
@@ -272,24 +290,14 @@ def extract_subschema(
         subschema=subschema,
         remove_entities=False
     )
+
     full_question = evidence + " " + question
-    subschema, full_question = _extract_from_data(
-        text=full_question,
-        schema=schema,
-        db_path=db_path,
-        subschema=subschema,
-        remove_entities=False
-    )
 
     full_question = expand_semantics(full_question)
     full_question = text_to_canonical_form(full_question)
     question_keys = set(full_question.split())
 
     key_map = generate_schema_keys(schema, schema_semantic_map)
-
-    # from pprint import pprint
-    # print(full_question)
-    # pprint(key_map)
 
     # Select tables relevant to the question
     for table_name in schema.keys():
@@ -325,11 +333,25 @@ def extract_subschema(
             if not column["values"] and any(t in column["data_type"].lower() for t in ("char","text","clob","nchar","nvarchar","int","real","floa","doub","numeric","decimal")):
                 column["values"].update(find_values(db_path, table_name, column_name, limit=1))
 
-    need_table_names = subschema.keys()
-    for table_name in need_table_names:
-        for column_name in schema[table_name]:
-            if column_name not in subschema[table_name]:
-                _add_schema_item(subschema, schema, table_name, column_name)
+    # need_table_names = subschema.keys()
+    # for table_name in need_table_names:
+    #     for column_name in schema[table_name]:
+    #         if column_name not in subschema[table_name]:
+    #             _add_schema_item(subschema, schema, table_name, column_name)
+
+    if len(subschema) >= 5:
+        deleted_tables = []
+        for table_name, table in subschema.items():
+            is_del = True
+            for column_name, column in table.items():
+                if column["foreign_key"]:
+                    ref_table = column["foreign_key"]["ref_table"]
+                    if ref_table in subschema:
+                        is_del = False
+                        break
+            if is_del:
+                deleted_tables.append(table_name)
+        subschema = {k: v for k, v in subschema.items() if k not in deleted_tables}
 
     for table in subschema.values():
         for column in table.values():
