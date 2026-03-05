@@ -133,17 +133,17 @@ def _extract_from_data(
                         values = []
                     if values:
                         for val in values:
-                            if val in text:
+                            if str(val) in text:
                                 entities.update(values)
                                 entities.add(table_name)
                                 entities.add(column_name)
-                            if val.lower() in text.lower():
+                            if str(val).lower() in text.lower():
                                 _add_schema_item(subschema, schema, table_name, column_name, values)
                                 break
 
     if remove_entities:
         for entity in entities:
-            text = text.replace(entity, "")
+            text = text.replace(str(entity), "")
         text = re.sub(r"\s+", " ", text)
 
     return subschema, text
