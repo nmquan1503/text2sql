@@ -125,6 +125,7 @@ def _extract_from_data(
                 continue
             value_prefixs = [v.lower() for v in value_prefixs]
             for word in cleaned_text.split():
+                done = False
                 word = word[:10].lower()
                 if word in value_prefixs:
                     if db_path:
@@ -139,7 +140,11 @@ def _extract_from_data(
                                 entities.add(column_name)
                             if str(val).lower() in text.lower():
                                 _add_schema_item(subschema, schema, table_name, column_name, values)
+                                done = True
+                            if done:
                                 break
+                        if done:
+                            break
 
     if remove_entities:
         for entity in entities:
